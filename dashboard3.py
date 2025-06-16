@@ -174,6 +174,179 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def american_put_fdm_cn_psor(S0, K, r, sigma, T, Ns, Nt, Smax_ratio=3, omega=1.4, tol=1e-6, max_iter=2000):
+    """
+    Prices an American put option using Finite Differences (Crank-Nicolson)
+    with Projected Successive Over-Relaxation (PSOR).
+    """
+    if S0 <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        warnings.warn("Inputs S0, K, sigma, T should be positive.")
+    if Ns <= 2 or Nt <= 1:
+        raise ValueError("Ns must be > 2 and Nt must be > 1.")
+    if not (1 < omega < 2):
+        warnings.warn(f"omega = {omega} is outside the typical range (1, 2).")
+
+    # Grid Setup
+    Smax = K * Smax_ratio
+    dS = Smax / Ns
+    dt = T / Nt
+
+    # Stock price grid (Ns+1 points from 0 to Smax)
+    S_vec = np.linspace(0, Smax, Ns + 1)
+    # Interior stock price grid points (Ns-1 points)
+    S_int_vec = S_vec[1:-1]
+
+    # Initialize option value grid (vector)
+    V = np.maximum(K - S_vec, 0) # Payoff at maturity T
+
+    # Set up Crank-Nicolson coefficients (constant for this PDE)
+    j = np.arange(1, Ns) # Interior indices
+    sigma2 = sigma**2
+    aj = 0.5 * dt * (r * j - 0.5 * sigma2 * j**2)
+    bj = 1 + dt * (r + sigma2 * j**2)
+    cj = -0.5 * dt * (r * j + 0.5 * sigma2 * j**2)
+
+    # Coefficients for the iterative solver matrix (implicit part)
+    alpha = -0.25 * dt * (sigma2 * j**2 - r * j)
+    beta = 1 + 0.5 * dt * (sigma2 * j**2 + r)
+    gamma = -0.25 * dt * (sigma2 * j**2 + r * j)
+
+    # Backward Time Iteration
+    for n in range(Nt - 1, -1, -1): # Time steps from T-dt down to 0
+        t = n * dt
+
+        # Calculate the known RHS vector from V at step n+1
+        alpha_exp = 0.25 * dt * (sigma2 * j**2 - r * j)
+        beta_exp = 1 - 0.5 * dt * (sigma2 * j**2 + r)
+        gamma_exp = 0.25 * dt * (sigma2 * j**2 + r * j)
+
+        rhs = alpha_exp * V[0:-2] + beta_exp * V[1:-1] + gamma_exp * V[2:]
+
+        # Incorporate boundary conditions into RHS
+        boundary_S0 = K * np.exp(-r * (T - t))
+        rhs[0] += alpha[0] * boundary_S0
+        rhs[0] += alpha_exp[0] * boundary_S0
+
+        # PSOR Iteration
+        V_old_iter = V[1:-1].copy()
+        payoff_int = np.maximum(K - S_int_vec, 0)
+
+        for k in range(max_iter):
+            V_new_iter = V_old_iter.copy()
+            max_diff = 0.0
+
+            # Update V[1] (j=1) using boundary V[0]
+            val = (rhs[0] - (gamma[0] * V_old_iter[1])) / beta[0]
+            V_new_iter[0] = max(payoff_int[0], V_old_iter[0] + omega * (val - V_old_iter[0]))
+            max_diff = max(max_diff, abs(V_new_iter[0] - V_old_iter[0]))
+
+            # Update interior points V[2] to V[Ns-2] (j=2 to Ns-2)
+            for j_idx in range(1, Ns - 2):
+                 val = (rhs[j_idx] - (alpha[j_idx] * V_new_iter[j_idx-1]) - (gamma[j_idx] * V_old_iter[j_idx+1])) / beta[j_idx]
+                 V_new_iter[j_idx] = max(payoff_int[j_idx], V_old_iter[j_idx] + omega * (val - V_old_iter[j_idx]))
+                 max_diff = max(max_diff, abs(V_new_iter[j_idx] - V_old_iter[j_idx]))
+
+            # Update V[Ns-1] (j=Ns-1) using boundary V[Ns] = 0
+            val = (rhs[Ns-2] - (alpha[Ns-2] * V_new_iter[Ns-3])) / beta[Ns-2]
+            V_new_iter[Ns-2] = max(payoff_int[Ns-2], V_old_iter[Ns-2] + omega * (val - V_old_iter[Ns-2]))
+            max_diff = max(max_diff, abs(V_new_iter[Ns-2] - V_old_iter[Ns-2]))
+
+            V_old_iter = V_new_iter
+
+            # Check convergence
+            if max_diff < tol:
+                break
+        else:
+             warnings.warn(f"PSOR did not converge at time step n={n} (t={t:.3f}) after {max_iter} iterations.")
+
+        # Update V for the current time step n
+        V[1:-1] = V_old_iter
+        V[0] = boundary_S0
+        V[Ns] = 0
+
+    # Interpolate the value at S0 from the final grid V (at t=0)
+    option_price = np.interp(S0, S_vec, V)
+    return option_price
+
+def american_lsmc_price(S, K, r, sigma, T, steps=50, n_paths=10000, option_type='put', seed=42):
+    """
+    Least-Squares Monte Carlo (Longstaff–Schwartz) for American put or call.
+    """
+    np.random.seed(seed)
+    dt = T / steps
+    discount = np.exp(-r*dt)
+    
+    # Simulate underlying paths
+    S_paths = np.zeros((steps+1, n_paths))
+    S_paths[0,:] = S
+    for t in range(1, steps+1):
+        Z = np.random.randn(n_paths)
+        S_paths[t,:] = S_paths[t-1,:] * np.exp((r - 0.5*sigma**2)*dt + sigma*np.sqrt(dt)*Z)
+    
+    # Payoff function
+    if option_type.lower() == 'put':
+        payoff = lambda x: np.maximum(K - x, 0)
+    else:
+        payoff = lambda x: np.maximum(x - K, 0)
+    
+    # Cashflows array to store the realized payoff (if exercised)
+    CF = np.zeros((steps+1, n_paths))
+    # At maturity, exercise if in the money
+    CF[steps,:] = payoff(S_paths[steps,:])
+    
+    # Work backward
+    for t in range(steps-1, -1, -1):
+        # In-the-money paths
+        itm = payoff(S_paths[t,:]) > 0
+        if np.sum(itm) == 0:
+            continue
+            
+        X = S_paths[t, itm]  # underlying in the money
+        
+        # Calculate continuation value
+        discounted_future = np.zeros(X.shape[0])
+        for i, path_idx in enumerate(np.where(itm)[0]):
+            future_ex_idx = np.where(CF[t+1:, path_idx] > 0)[0]
+            if len(future_ex_idx) > 0:
+                first_ex = future_ex_idx[0]
+                discounted_future[i] = CF[t+1+first_ex, path_idx] * discount**(first_ex+1)
+            else:
+                discounted_future[i] = 0
+        
+        # Regress discounted_future on polynomial basis of X (S[t])
+        if len(X) > 3:  # Need enough points for regression
+            A = np.vstack([np.ones(X.shape[0]), X, X**2]).T
+            try:
+                coeff, _, _, _ = np.linalg.lstsq(A, discounted_future, rcond=None)
+                continuation_value = coeff[0] + coeff[1]*X + coeff[2]*X**2
+            except:
+                continuation_value = discounted_future  # Fallback
+        else:
+            continuation_value = discounted_future
+        
+        # Exercise decision
+        exercise_value = payoff(X)
+        exercise_idx = (exercise_value > continuation_value)
+        
+        # For those who exercise, set CF at time t
+        exercise_paths = np.where(itm)[0][exercise_idx]
+        CF[t, exercise_paths] = exercise_value[exercise_idx]
+        # For times t+1..end, set CF=0 if exercised
+        for ep in exercise_paths:
+            CF[t+1:, ep] = 0
+    
+    # The price is the average discounted payoff from t=0
+    prices = np.zeros(n_paths)
+    for path_idx in range(n_paths):
+        ex_times = np.where(CF[:, path_idx]>0)[0]
+        if len(ex_times) > 0:
+            first_ex = ex_times[0]
+            prices[path_idx] = CF[first_ex, path_idx]*np.exp(-r*(first_ex*dt))
+        else:
+            prices[path_idx] = 0
+    
+    return np.mean(prices)
+
 class OptionsPricingEngine:
     """Professional options pricing engine with multiple models"""
     
@@ -251,16 +424,30 @@ class OptionsPricingEngine:
         return option_values[0]
     
     @staticmethod
-    def calculate_greeks(S, K, T, r, sigma, option_type='call'):
+    def calculate_greeks(S, K, T, r, sigma, option_type='call', is_american=False):
         """Calculate option Greeks"""
         h = 0.01
         
-        # Get base price
-        price = OptionsPricingEngine.black_scholes_price(S, K, T, r, sigma, option_type)
+        # Get base price - use appropriate method based on option style
+        if is_american:
+            if option_type == 'put':
+                price = american_put_fdm_cn_psor(S, K, r, sigma, T, 100, 100)
+            else:
+                price = OptionsPricingEngine.binomial_price(S, K, T, r, sigma, 1000, option_type, True)
+        else:
+            price = OptionsPricingEngine.black_scholes_price(S, K, T, r, sigma, option_type)
         
         # Delta
-        price_up = OptionsPricingEngine.black_scholes_price(S + h, K, T, r, sigma, option_type)
-        price_down = OptionsPricingEngine.black_scholes_price(S - h, K, T, r, sigma, option_type)
+        if is_american:
+            if option_type == 'put':
+                price_up = american_put_fdm_cn_psor(S + h, K, r, sigma, T, 100, 100)
+                price_down = american_put_fdm_cn_psor(S - h, K, r, sigma, T, 100, 100)
+            else:
+                price_up = OptionsPricingEngine.binomial_price(S + h, K, T, r, sigma, 1000, option_type, True)
+                price_down = OptionsPricingEngine.binomial_price(S - h, K, T, r, sigma, 1000, option_type, True)
+        else:
+            price_up = OptionsPricingEngine.black_scholes_price(S + h, K, T, r, sigma, option_type)
+            price_down = OptionsPricingEngine.black_scholes_price(S - h, K, T, r, sigma, option_type)
         delta = (price_up - price_down) / (2 * h)
         
         # Gamma
@@ -268,17 +455,35 @@ class OptionsPricingEngine:
         
         # Theta (per day)
         if T > h/365:
-            price_theta = OptionsPricingEngine.black_scholes_price(S, K, T - h/365, r, sigma, option_type)
+            if is_american:
+                if option_type == 'put':
+                    price_theta = american_put_fdm_cn_psor(S, K, r, sigma, T - h/365, 100, 100)
+                else:
+                    price_theta = OptionsPricingEngine.binomial_price(S, K, T - h/365, r, sigma, 1000, option_type, True)
+            else:
+                price_theta = OptionsPricingEngine.black_scholes_price(S, K, T - h/365, r, sigma, option_type)
             theta = (price_theta - price) / (h/365) / 365
         else:
             theta = 0
         
         # Vega (per 1% change in volatility)
-        price_vega = OptionsPricingEngine.black_scholes_price(S, K, T, r, sigma + h, option_type)
+        if is_american:
+            if option_type == 'put':
+                price_vega = american_put_fdm_cn_psor(S, K, r, sigma + h, T, 100, 100)
+            else:
+                price_vega = OptionsPricingEngine.binomial_price(S, K, T, r, sigma + h, 1000, option_type, True)
+        else:
+            price_vega = OptionsPricingEngine.black_scholes_price(S, K, T, r, sigma + h, option_type)
         vega = (price_vega - price) / h * 0.01
         
         # Rho (per 1% change in interest rate)
-        price_rho = OptionsPricingEngine.black_scholes_price(S, K, T, r + h, sigma, option_type)
+        if is_american:
+            if option_type == 'put':
+                price_rho = american_put_fdm_cn_psor(S, K, r + h, sigma, T, 100, 100)
+            else:
+                price_rho = OptionsPricingEngine.binomial_price(S, K, T, r + h, sigma, 1000, option_type, True)
+        else:
+            price_rho = OptionsPricingEngine.black_scholes_price(S, K, T, r + h, sigma, option_type)
         rho = (price_rho - price) / h * 0.01
         
         return {
@@ -295,13 +500,14 @@ def create_pricing_comparison_chart(results_df):
     
     methods = results_df['Method'].tolist()
     prices = results_df['Price'].tolist()
+    changes = results_df.get('Change %', [0] * len(methods))
     colors = ['#3b82f6', '#10b981', '#f59e0b']
     
     fig.add_trace(go.Bar(
         x=methods,
         y=prices,
         marker_color=colors,
-        text=[f'${p:.4f}' for p in prices],
+        text=[f'${p:.4f}<br>{c:+.2f}%' if c != 0 else f'${p:.4f}' for p, c in zip(prices, changes)],
         textposition='auto',
         name='Option Price'
     ))
@@ -329,7 +535,7 @@ def create_greeks_radar_chart(greeks):
                    greeks['vega'], greeks['rho']]
     
     # Normalize values for radar chart
-    max_val = max(abs(v) for v in greek_values)
+    max_val = max(abs(v) for v in greek_values if v != 0)
     if max_val > 0:
         normalized_values = [abs(v)/max_val for v in greek_values]
     else:
@@ -367,49 +573,13 @@ def create_greeks_radar_chart(greeks):
     
     return fig
 
-def create_volatility_surface():
-    """Create a 3D volatility surface visualization"""
-    strikes = np.linspace(80, 120, 20)
-    times = np.linspace(0.1, 2, 20)
-    Strike, Time = np.meshgrid(strikes, times)
-    
-    # Simulate volatility surface (simplified model)
-    base_vol = 0.2
-    skew = -0.1
-    term_structure = 0.05
-    
-    Volatility = base_vol + skew * (Strike - 100) / 100 + term_structure * np.sqrt(Time)
-    
-    fig = go.Figure(data=[go.Surface(
-        z=Volatility,
-        x=Strike,
-        y=Time,
-        colorscale='Viridis',
-        opacity=0.8
-    )])
-    
-    fig.update_layout(
-        title='Implied Volatility Surface',
-        title_font_size=18,
-        title_font_color='white',
-        scene=dict(
-            xaxis_title='Strike Price',
-            yaxis_title='Time to Maturity',
-            zaxis_title='Implied Volatility',
-            bgcolor='rgba(0,0,0,0)',
-            xaxis=dict(color='white'),
-            yaxis=dict(color='white'),
-            zaxis=dict(color='white')
-        ),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='white'),
-        height=500
-    )
-    
-    return fig
-
 def main():
+    # Initialize session state for tracking previous values
+    if 'previous_params' not in st.session_state:
+        st.session_state['previous_params'] = None
+    if 'previous_results' not in st.session_state:
+        st.session_state['previous_results'] = None
+    
     # Header
     st.markdown("""
     <div class="main-header">
@@ -460,204 +630,23 @@ def main():
     
     # Model Parameters
     st.sidebar.markdown("### 🔧 MODEL PARAMETERS")
-    col7, col8 = st.sidebar.columns(2)
-    with col7:
-        mc_paths = st.number_input("MC Simulations", value=100000, min_value=1000, step=1000)
-    with col8:
-        binomial_steps = st.number_input("Binomial Steps", value=1000, min_value=10, step=10)
+    if style == "American":
+        col7, col8 = st.sidebar.columns(2)
+        with col7:
+            lsmc_paths = st.number_input("LSMC Paths", value=10000, min_value=1000, step=1000)
+        with col8:
+            fdm_steps = st.number_input("FDM Steps", value=100, min_value=10, step=10)
+    else:
+        col7, col8 = st.sidebar.columns(2)
+        with col7:
+            mc_paths = st.number_input("MC Simulations", value=100000, min_value=1000, step=1000)
+        with col8:
+            binomial_steps = st.number_input("Binomial Steps", value=1000, min_value=10, step=10)
     
     # Calculate button
     calculate_button = st.sidebar.button("🚀 EXECUTE PRICING", use_container_width=True)
     
-    if calculate_button or 'results' not in st.session_state:
-        with st.spinner("⚡ Executing pricing models..."):
-            # Initialize pricing engine
-            engine = OptionsPricingEngine()
-            
-            # Calculate using different methods
-            start_time = time.time()
-            
-            # Black-Scholes
-            bs_start = time.time()
-            bs_price = engine.black_scholes_price(spot_price, strike_price, time_to_maturity, 
-                                                risk_free_rate, volatility, option_type)
-            bs_time = (time.time() - bs_start) * 1000
-            
-            # Monte Carlo
-            mc_start = time.time()
-            mc_price = engine.monte_carlo_price(spot_price, strike_price, time_to_maturity,
-                                              risk_free_rate, volatility, mc_paths, option_type)
-            mc_time = (time.time() - mc_start) * 1000
-            
-            # Binomial
-            bin_start = time.time()
-            american = (style == "American")
-            bin_price = engine.binomial_price(spot_price, strike_price, time_to_maturity,
-                                            risk_free_rate, volatility, binomial_steps, 
-                                            option_type, american)
-            bin_time = (time.time() - bin_start) * 1000
-            
-            # Greeks
-            greeks = engine.calculate_greeks(spot_price, strike_price, time_to_maturity,
-                                           risk_free_rate, volatility, option_type)
-            
-            total_time = (time.time() - start_time) * 1000
-            
-            # Store results
-            st.session_state['results'] = {
-                'prices': {
-                    'Black-Scholes': {'price': bs_price, 'time': bs_time},
-                    'Monte Carlo': {'price': mc_price, 'time': mc_time},
-                    'Binomial': {'price': bin_price, 'time': bin_time}
-                },
-                'greeks': greeks,
-                'total_time': total_time
-            }
-    
-    # Display results if available
-    if 'results' in st.session_state:
-        results = st.session_state['results']
-        
-        # Main pricing results
-        st.markdown("### 💰 VALUATION RESULTS")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            bs_price = results['prices']['Black-Scholes']['price']
-            bs_time = results['prices']['Black-Scholes']['time']
-            st.markdown(f"""
-            <div class="metric-container">
-                <div class="metric-title">BLACK-SCHOLES</div>
-                <div class="metric-value">${bs_price:.4f}</div>
-                <div class="metric-delta" style="color: #10b981;">⚡ {bs_time:.2f}ms</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            mc_price = results['prices']['Monte Carlo']['price']
-            mc_time = results['prices']['Monte Carlo']['time']
-            mc_diff = ((mc_price - bs_price) / bs_price * 100)
-            diff_color = "#10b981" if mc_diff >= 0 else "#ef4444"
-            st.markdown(f"""
-            <div class="metric-container">
-                <div class="metric-title">MONTE CARLO</div>
-                <div class="metric-value">${mc_price:.4f}</div>
-                <div class="metric-delta" style="color: {diff_color};">
-                    {mc_diff:+.2f}% | ⚡ {mc_time:.2f}ms
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            bin_price = results['prices']['Binomial']['price']
-            bin_time = results['prices']['Binomial']['time']
-            bin_diff = ((bin_price - bs_price) / bs_price * 100)
-            diff_color = "#10b981" if bin_diff >= 0 else "#ef4444"
-            st.markdown(f"""
-            <div class="metric-container">
-                <div class="metric-title">BINOMIAL</div>
-                <div class="metric-value">${bin_price:.4f}</div>
-                <div class="metric-delta" style="color: {diff_color};">
-                    {bin_diff:+.2f}% | ⚡ {bin_time:.2f}ms
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Greeks display
-        st.markdown("### 📊 RISK SENSITIVITIES (GREEKS)")
-        
-        greeks = results['greeks']
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        greek_configs = [
-            ('DELTA (Δ)', greeks['delta'], '#3b82f6', 'Price sensitivity'),
-            ('GAMMA (Γ)', greeks['gamma'], '#10b981', 'Delta sensitivity'),
-            ('THETA (Θ)', greeks['theta'], '#ef4444', 'Time decay'),
-            ('VEGA (ν)', greeks['vega'], '#8b5cf6', 'Volatility sensitivity'),
-            ('RHO (ρ)', greeks['rho'], '#f59e0b', 'Rate sensitivity')
-        ]
-        
-        for i, (col, (name, value, color, desc)) in enumerate(zip([col1, col2, col3, col4, col5], greek_configs)):
-            with col:
-                st.markdown(f"""
-                <div class="greek-item">
-                    <div class="greek-name">{name}</div>
-                    <div class="greek-value" style="color: {color};">{value:.4f}</div>
-                    <div style="color: #9ca3af; font-size: 10px; margin-top: 5px;">{desc}</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Charts section
-        st.markdown("### 📈 ANALYTICS & VISUALIZATION")
-        
-        tab1, tab2, tab3 = st.tabs(["📊 Pricing Comparison", "🎯 Greeks Analysis", "📉 Volatility Surface"])
-        
-        with tab1:
-            # Create pricing comparison chart
-            results_df = pd.DataFrame([
-                {'Method': 'Black-Scholes', 'Price': bs_price, 'Time (ms)': bs_time},
-                {'Method': 'Monte Carlo', 'Price': mc_price, 'Time (ms)': mc_time},
-                {'Method': 'Binomial', 'Price': bin_price, 'Time (ms)': bin_time}
-            ])
-            
-            fig = create_pricing_comparison_chart(results_df)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Performance metrics table
-            st.markdown("#### ⚡ PERFORMANCE METRICS")
-            
-            performance_df = pd.DataFrame({
-                'Method': ['Black-Scholes', 'Monte Carlo', 'Binomial'],
-                'Price ($)': [f"{p:.4f}" for p in [bs_price, mc_price, bin_price]],
-                'Execution Time (ms)': [f"{t:.2f}" for t in [bs_time, mc_time, bin_time]],
-                'Accuracy vs BS (%)': ['Reference', f"{mc_diff:+.2f}%", f"{bin_diff:+.2f}%"],
-                'Method Type': ['Analytical', 'Simulation', 'Numerical']
-            })
-            
-            st.dataframe(performance_df, use_container_width=True)
-        
-        with tab2:
-            # Greeks radar chart
-            fig_radar = create_greeks_radar_chart(greeks)
-            st.plotly_chart(fig_radar, use_container_width=True)
-            
-            # Greeks interpretation
-            st.markdown("#### 🔍 GREEKS INTERPRETATION")
-            
-            interpretations = {
-                'Delta': f"A 1% move in underlying price changes option value by ${abs(greeks['delta']*spot_price*0.01):.4f}",
-                'Gamma': f"Delta changes by {greeks['gamma']:.4f} for each $1 move in underlying",
-                'Theta': f"Option loses ${abs(greeks['theta']):.4f} in value per day (time decay)",
-                'Vega': f"1% increase in volatility increases option value by ${greeks['vega']:.4f}",
-                'Rho': f"1% increase in interest rate changes option value by ${greeks['rho']:.4f}"
-            }
-            
-            for greek, interpretation in interpretations.items():
-                st.markdown(f"**{greek}:** {interpretation}")
-        
-        with tab3:
-            # Volatility surface
-            fig_surface = create_volatility_surface()
-            st.plotly_chart(fig_surface, use_container_width=True)
-            
-            st.markdown("""
-            #### 📊 VOLATILITY SURFACE ANALYSIS
-            This 3D surface shows how implied volatility varies across different strikes and maturities.
-            - **X-axis**: Strike prices relative to spot
-            - **Y-axis**: Time to maturity
-            - **Z-axis**: Implied volatility levels
-            """)
-        
-        # Footer with execution summary
-        st.markdown("---")
-        st.markdown(f"""
-        <div style="text-align: center; color: #9ca3af; font-size: 12px;">
-            <strong>EXECUTION SUMMARY</strong> | Total computation time: {results['total_time']:.2f}ms | 
-            Models executed: 3 | Greeks calculated: 5 | 
-            Last updated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S EST")}
-        </div>
-        """, unsafe_allow_html=True)
-
-if __name__ == "__main__":
-    main()
+    # Current parameters
+    current_params = {
+        'spot_price': spot_price,
+        'strike_price': strike_price
