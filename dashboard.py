@@ -1,476 +1,245 @@
-import React, { useState, useCallback } from 'react';
-import { Calculator, TrendingUp, BarChart3, Settings, Clock, DollarSign, Zap, Target } from 'lucide-react';
+# Option Pricing Dashboard using Streamlit
+# This script provides an interactive interface to price options
+# using several methods implemented in the Option_Pricing notebook.
 
-// Black-Scholes pricing function
-const blackScholesPrice = (S, K, r, sigma, T, optionType = 'call') => {
-  if (T <= 0) {
-    return optionType.toLowerCase() === 'call' ? Math.max(S - K, 0) : Math.max(K - S, 0);
-  }
-  
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  
-  const normCdf = (x) => {
-    return 0.5 * (1 + erf(x / Math.sqrt(2)));
-  };
-  
-  const erf = (x) => {
-    const a1 =  0.254829592;
-    const a2 = -0.284496736;
-    const a3 =  1.421413741;
-    const a4 = -1.453152027;
-    const a5 =  1.061405429;
-    const p  =  0.3275911;
-    
-    const sign = x >= 0 ? 1 : -1;
-    x = Math.abs(x);
-    
-    const t = 1.0 / (1.0 + p * x);
-    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-    
-    return sign * y;
-  };
-  
-  if (optionType.toLowerCase() === 'call') {
-    return S * normCdf(d1) - K * Math.exp(-r * T) * normCdf(d2);
-  } else {
-    return K * Math.exp(-r * T) * normCdf(-d2) - S * normCdf(-d1);
-  }
-};
+import time
+import warnings
+import numpy as np
+from scipy.stats import norm
 
-// Monte Carlo pricing
-const monteCarloPrice = (S, K, r, sigma, T, nPaths = 10000, optionType = 'call') => {
-  let total = 0;
-  
-  for (let i = 0; i < nPaths; i++) {
-    const z = Math.random() * 2 - 1 + Math.random() * 2 - 1 + Math.random() * 2 - 1;
-    const ST = S * Math.exp((r - 0.5 * sigma ** 2) * T + sigma * Math.sqrt(T) * z);
-    
-    if (optionType.toLowerCase() === 'call') {
-      total += Math.max(ST - K, 0);
-    } else {
-      total += Math.max(K - ST, 0);
-    }
-  }
-  
-  return Math.exp(-r * T) * (total / nPaths);
-};
+try:
+    import streamlit as st
+except ImportError:  # streamlit might not be installed
+    st = None
 
-// Binomial pricing
-const binomialPrice = (S, K, r, sigma, T, steps = 100, optionType = 'call', american = false) => {
-  const dt = T / steps;
-  const u = Math.exp(sigma * Math.sqrt(dt));
-  const d = 1 / u;
-  const p = (Math.exp(r * dt) - d) / (u - d);
-  const discount = Math.exp(-r * dt);
-  
-  let prices = new Array(steps + 1);
-  
-  // Initialize prices at maturity
-  for (let i = 0; i <= steps; i++) {
-    const ST = S * Math.pow(u, steps - i) * Math.pow(d, i);
-    if (optionType === 'call') {
-      prices[i] = Math.max(ST - K, 0);
-    } else {
-      prices[i] = Math.max(K - ST, 0);
-    }
-  }
-  
-  // Work backwards
-  for (let step = steps - 1; step >= 0; step--) {
-    for (let i = 0; i <= step; i++) {
-      prices[i] = discount * (p * prices[i] + (1 - p) * prices[i + 1]);
-      
-      if (american) {
-        const ST = S * Math.pow(u, step - i) * Math.pow(d, i);
-        const exercise = optionType === 'call' ? ST - K : K - ST;
-        prices[i] = Math.max(prices[i], exercise);
-      }
-    }
-  }
-  
-  return prices[0];
-};
 
-// Greeks calculations
-const calculateGreeks = (S, K, r, sigma, T, optionType) => {
-  const h = 0.01;
-  const price = blackScholesPrice(S, K, r, sigma, T, optionType);
-  
-  // Delta
-  const priceUp = blackScholesPrice(S + h, K, r, sigma, T, optionType);
-  const priceDown = blackScholesPrice(S - h, K, r, sigma, T, optionType);
-  const delta = (priceUp - priceDown) / (2 * h);
-  
-  // Gamma
-  const gamma = (priceUp - 2 * price + priceDown) / (h * h);
-  
-  // Theta
-  const priceT = blackScholesPrice(S, K, r, sigma, T - h/365, optionType);
-  const theta = (priceT - price) / (h/365);
-  
-  // Vega
-  const priceV = blackScholesPrice(S, K, r, sigma + h, T, optionType);
-  const vega = (priceV - price) / h;
-  
-  // Rho
-  const priceR = blackScholesPrice(S, K, r + h, sigma, T, optionType);
-  const rho = (priceR - price) / h;
-  
-  return { delta, gamma, theta, vega, rho };
-};
+def black_scholes_price(S, K, r, sigma, T, option_type="call"):
+    """Black-Scholes-Merton formula for European options."""
+    if T <= 0:
+        if option_type.lower() == "call":
+            return max(S - K, 0)
+        else:
+            return max(K - S, 0)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if option_type.lower() == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-const OptionPricingDashboard = () => {
-  const [inputs, setInputs] = useState({
-    spotPrice: 100,
-    strikePrice: 100,
-    timeToMaturity: 1.0,
-    riskFreeRate: 0.05,
-    volatility: 0.20,
-    optionType: 'call',
-    style: 'European',
-    steps: 100,
-    paths: 10000
-  });
-  
-  const [results, setResults] = useState(null);
-  const [previousResults, setPreviousResults] = useState(null);
-  const [calculating, setCalculating] = useState(false);
 
-  const calculate = useCallback(() => {
-    setCalculating(true);
-    
-    // Small delay to show loading state
-    setTimeout(() => {
-      const { spotPrice: S, strikePrice: K, riskFreeRate: r, volatility: sigma, timeToMaturity: T, optionType, style, steps, paths } = inputs;
-      
-      const startTime = performance.now();
-      
-      // Black-Scholes
-      const bsStart = performance.now();
-      const bsPrice = blackScholesPrice(S, K, r, sigma, T, optionType);
-      const bsTime = performance.now() - bsStart;
-      
-      // Monte Carlo
-      const mcStart = performance.now();
-      const mcPrice = monteCarloPrice(S, K, r, sigma, T, paths, optionType);
-      const mcTime = performance.now() - mcStart;
-      
-      // Binomial
-      const binStart = performance.now();
-      const american = style === 'American';
-      const binPrice = binomialPrice(S, K, r, sigma, T, steps, optionType, american);
-      const binTime = performance.now() - binStart;
-      
-      // Greeks
-      const greeks = calculateGreeks(S, K, r, sigma, T, optionType);
-      
-      const newResults = {
-        'Black-Scholes': { price: bsPrice, time: bsTime },
-        'Monte Carlo': { price: mcPrice, time: mcTime },
-        'Binomial': { price: binPrice, time: binTime },
-        greeks
-      };
-      
-      setPreviousResults(results);
-      setResults(newResults);
-      setCalculating(false);
-    }, 100);
-  }, [inputs, results]);
+def european_monte_carlo(S, K, r, sigma, T, n_paths=10000, option_type="call", seed=42):
+    """Monte Carlo pricing for European options."""
+    np.random.seed(seed)
+    Z = np.random.randn(n_paths)
+    ST = S * np.exp((r - 0.5 * sigma ** 2) * T + sigma * np.sqrt(T) * Z)
+    if option_type.lower() == "call":
+        payoff = np.maximum(ST - K, 0)
+    else:
+        payoff = np.maximum(K - ST, 0)
+    return np.exp(-r * T) * np.mean(payoff)
 
-  const formatPrice = (price) => price?.toFixed(4) || '0.0000';
-  const formatTime = (time) => `${(time || 0).toFixed(2)}ms`;
-  const formatChange = (current, previous) => {
-    if (!previous) return null;
-    const change = current - previous;
-    const changeClass = change > 0 ? 'text-green-500' : change < 0 ? 'text-red-500' : 'text-gray-500';
-    return (
-      <span className={`text-sm font-medium ${changeClass}`}>
-        {change > 0 ? '+' : ''}{change.toFixed(4)}
-      </span>
-    );
-  };
 
-  return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-blue-900 to-purple-900 rounded-lg p-6 mb-6 shadow-2xl">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <Calculator className="w-8 h-8 text-blue-400" />
-            <div>
-              <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                Options Pricing Terminal
-              </h1>
-              <p className="text-gray-300 mt-1">Professional derivatives valuation platform</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm text-gray-400">Real-time Analytics</div>
-            <div className="text-lg font-mono text-green-400">{new Date().toLocaleTimeString()}</div>
-          </div>
-        </div>
-      </div>
+def binomial_option_price(S, K, r, sigma, T, steps=100, option_type="call", american=False):
+    """Binomial tree option pricing supporting European and American options."""
+    dt = T / steps
+    u = np.exp(sigma * np.sqrt(dt))
+    d = 1 / u
+    p = (np.exp(r * dt) - d) / (u - d)
+    discount = np.exp(-r * dt)
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Input Panel */}
-        <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
-          <div className="flex items-center space-x-2 mb-6">
-            <Settings className="w-5 h-5 text-blue-400" />
-            <h2 className="text-xl font-semibold">Parameters</h2>
-          </div>
-          
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Spot Price (S)</label>
-                <input
-                  type="number"
-                  value={inputs.spotPrice}
-                  onChange={(e) => setInputs({...inputs, spotPrice: parseFloat(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Strike Price (K)</label>
-                <input
-                  type="number"
-                  value={inputs.strikePrice}
-                  onChange={(e) => setInputs({...inputs, strikePrice: parseFloat(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Time to Maturity (Years)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={inputs.timeToMaturity}
-                onChange={(e) => setInputs({...inputs, timeToMaturity: parseFloat(e.target.value) || 0})}
-                className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Risk-free Rate (r)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={inputs.riskFreeRate}
-                  onChange={(e) => setInputs({...inputs, riskFreeRate: parseFloat(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Volatility (σ)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={inputs.volatility}
-                  onChange={(e) => setInputs({...inputs, volatility: parseFloat(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Option Type</label>
-                <select
-                  value={inputs.optionType}
-                  onChange={(e) => setInputs({...inputs, optionType: e.target.value})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="call">Call</option>
-                  <option value="put">Put</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Style</label>
-                <select
-                  value={inputs.style}
-                  onChange={(e) => setInputs({...inputs, style: e.target.value})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="European">European</option>
-                  <option value="American">American</option>
-                </select>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Steps</label>
-                <input
-                  type="number"
-                  value={inputs.steps}
-                  onChange={(e) => setInputs({...inputs, steps: parseInt(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">MC Paths</label>
-                <input
-                  type="number"
-                  value={inputs.paths}
-                  onChange={(e) => setInputs({...inputs, paths: parseInt(e.target.value) || 0})}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-            
-            <button
-              onClick={calculate}
-              disabled={calculating}
-              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center space-x-2"
-            >
-              {calculating ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  <span>Calculating...</span>
-                </>
-              ) : (
-                <>
-                  <Calculator className="w-4 h-4" />
-                  <span>Calculate Options</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
+    prices = np.zeros(steps + 1)
+    for i in range(steps + 1):
+        ST = S * (u ** (steps - i)) * (d ** i)
+        if option_type == "call":
+            prices[i] = max(ST - K, 0)
+        else:
+            prices[i] = max(K - ST, 0)
 
-        {/* Results Panel */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Pricing Results */}
-          <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
-            <div className="flex items-center space-x-2 mb-6">
-              <DollarSign className="w-5 h-5 text-green-400" />
-              <h2 className="text-xl font-semibold">Valuation Results</h2>
-            </div>
-            
-            {results ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {Object.entries(results).filter(([key]) => key !== 'greeks').map(([method, data]) => (
-                  <div key={method} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-semibold text-blue-400">{method}</h3>
-                      <Zap className="w-4 h-4 text-yellow-400" />
-                    </div>
-                    <div className="text-2xl font-mono font-bold text-white mb-1">
-                      ${formatPrice(data.price)}
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-400">{formatTime(data.time)}</span>
-                      {previousResults && previousResults[method] && 
-                        formatChange(data.price, previousResults[method].price)
-                      }
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12 text-gray-400">
-                <Calculator className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>Click "Calculate Options" to see pricing results</p>
-              </div>
-            )}
-          </div>
+    for step in range(steps - 1, -1, -1):
+        for i in range(step + 1):
+            prices[i] = discount * (p * prices[i] + (1 - p) * prices[i + 1])
+            if american:
+                ST = S * (u ** (step - i)) * (d ** i)
+                exercise = ST - K if option_type == "call" else K - ST
+                prices[i] = max(prices[i], exercise)
+    return prices[0]
 
-          {/* Greeks */}
-          {results?.greeks && (
-            <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
-              <div className="flex items-center space-x-2 mb-6">
-                <TrendingUp className="w-5 h-5 text-purple-400" />
-                <h2 className="text-xl font-semibold">Risk Sensitivities (Greeks)</h2>
-              </div>
-              
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                <div className="bg-gray-700 rounded-lg p-4 text-center">
-                  <div className="text-sm text-gray-400 mb-1">Delta (Δ)</div>
-                  <div className="text-lg font-mono font-bold text-blue-400">
-                    {results.greeks.delta.toFixed(4)}
-                  </div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-4 text-center">
-                  <div className="text-sm text-gray-400 mb-1">Gamma (Γ)</div>
-                  <div className="text-lg font-mono font-bold text-green-400">
-                    {results.greeks.gamma.toFixed(4)}
-                  </div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-4 text-center">
-                  <div className="text-sm text-gray-400 mb-1">Theta (Θ)</div>
-                  <div className="text-lg font-mono font-bold text-red-400">
-                    {results.greeks.theta.toFixed(4)}
-                  </div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-4 text-center">
-                  <div className="text-sm text-gray-400 mb-1">Vega (ν)</div>
-                  <div className="text-lg font-mono font-bold text-purple-400">
-                    {results.greeks.vega.toFixed(4)}
-                  </div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-4 text-center">
-                  <div className="text-sm text-gray-400 mb-1">Rho (ρ)</div>
-                  <div className="text-lg font-mono font-bold text-yellow-400">
-                    {results.greeks.rho.toFixed(4)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* Performance Metrics */}
-          {results && (
-            <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
-              <div className="flex items-center space-x-2 mb-6">
-                <BarChart3 className="w-5 h-5 text-orange-400" />
-                <h2 className="text-xl font-semibold">Performance Analysis</h2>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <h3 className="text-lg font-semibold mb-3 text-orange-400">Method Comparison</h3>
-                  <div className="space-y-2">
-                    {Object.entries(results).filter(([key]) => key !== 'greeks').map(([method, data]) => {
-                      const bsPrice = results['Black-Scholes'].price;
-                      const diff = Math.abs(data.price - bsPrice);
-                      const diffPercent = (diff / bsPrice * 100);
-                      
-                      return (
-                        <div key={method} className="flex justify-between items-center py-2 px-3 bg-gray-700 rounded">
-                          <span className="text-sm font-medium">{method}</span>
-                          <span className="text-sm text-gray-400">
-                            ±{diffPercent.toFixed(2)}%
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="text-lg font-semibold mb-3 text-orange-400">Execution Time</h3>
-                  <div className="space-y-2">
-                    {Object.entries(results).filter(([key]) => key !== 'greeks').map(([method, data]) => (
-                      <div key={method} className="flex justify-between items-center py-2 px-3 bg-gray-700 rounded">
-                        <span className="text-sm font-medium">{method}</span>
-                        <span className="text-sm text-gray-400">
-                          {formatTime(data.time)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
+def american_put_fdm_cn_psor(S0, K, r, sigma, T, Ns, Nt, Smax_ratio=3, omega=1.4, tol=1e-6, max_iter=2000):
+    """Finite Difference solver (Crank-Nicolson with PSOR) for American puts."""
+    if S0 <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        warnings.warn("Inputs S0, K, sigma, T should be positive.")
+    if Ns <= 2 or Nt <= 1:
+        raise ValueError("Ns must be > 2 and Nt must be > 1.")
+    if not (1 < omega < 2):
+        warnings.warn(f"omega = {omega} is outside the typical range (1, 2).")
 
-export default OptionPricingDashboard;
+    Smax = K * Smax_ratio
+    dS = Smax / Ns
+    dt = T / Nt
+    S_vec = np.linspace(0, Smax, Ns + 1)
+    S_int_vec = S_vec[1:-1]
+    V = np.maximum(K - S_vec, 0)
+
+    j = np.arange(1, Ns)
+    sigma2 = sigma ** 2
+    alpha = -0.25 * dt * (sigma2 * j ** 2 - r * j)
+    beta = 1 + 0.5 * dt * (sigma2 * j ** 2 + r)
+    gamma = -0.25 * dt * (sigma2 * j ** 2 + r * j)
+
+    for n in range(Nt - 1, -1, -1):
+        t = n * dt
+        alpha_exp = 0.25 * dt * (sigma2 * j ** 2 - r * j)
+        beta_exp = 1 - 0.5 * dt * (sigma2 * j ** 2 + r)
+        gamma_exp = 0.25 * dt * (sigma2 * j ** 2 + r * j)
+
+        rhs = alpha_exp * V[0:-2] + beta_exp * V[1:-1] + gamma_exp * V[2:]
+        boundary_S0 = K * np.exp(-r * (T - t))
+        rhs[0] += alpha[0] * boundary_S0
+        rhs[0] += alpha_exp[0] * boundary_S0
+
+        V_old_iter = V[1:-1].copy()
+        payoff_int = np.maximum(K - S_int_vec, 0)
+
+        for _ in range(max_iter):
+            V_new_iter = V_old_iter.copy()
+            max_diff = 0.0
+
+            val = (rhs[0] - (gamma[0] * V_old_iter[1])) / beta[0]
+            V_new_iter[0] = max(payoff_int[0], V_old_iter[0] + omega * (val - V_old_iter[0]))
+            max_diff = max(max_diff, abs(V_new_iter[0] - V_old_iter[0]))
+
+            for j_idx in range(1, Ns - 2):
+                val = (rhs[j_idx] - (alpha[j_idx] * V_new_iter[j_idx - 1]) - (gamma[j_idx] * V_old_iter[j_idx + 1])) / beta[j_idx]
+                V_new_iter[j_idx] = max(payoff_int[j_idx], V_old_iter[j_idx] + omega * (val - V_old_iter[j_idx]))
+                max_diff = max(max_diff, abs(V_new_iter[j_idx] - V_old_iter[j_idx]))
+
+            val = (rhs[Ns - 2] - (alpha[Ns - 2] * V_new_iter[Ns - 3])) / beta[Ns - 2]
+            V_new_iter[Ns - 2] = max(payoff_int[Ns - 2], V_old_iter[Ns - 2] + omega * (val - V_old_iter[Ns - 2]))
+            max_diff = max(max_diff, abs(V_new_iter[Ns - 2] - V_old_iter[Ns - 2]))
+
+            V_old_iter = V_new_iter
+            if max_diff < tol:
+                break
+
+        V[1:-1] = V_old_iter
+        V[0] = boundary_S0
+        V[Ns] = 0
+
+    option_price = np.interp(S0, S_vec, V)
+    return option_price
+
+
+def american_lsmc_price(S, K, r, sigma, T, steps=50, n_paths=10000, option_type="put", seed=42):
+    """Least-Squares Monte Carlo (Longstaff–Schwartz) for American options."""
+    np.random.seed(seed)
+    dt = T / steps
+    discount = np.exp(-r * dt)
+
+    S_paths = np.zeros((steps + 1, n_paths))
+    S_paths[0, :] = S
+    for t in range(1, steps + 1):
+        Z = np.random.randn(n_paths)
+        S_paths[t, :] = S_paths[t - 1, :] * np.exp((r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z)
+
+    if option_type.lower() == "put":
+        payoff = lambda x: np.maximum(K - x, 0)
+    else:
+        payoff = lambda x: np.maximum(x - K, 0)
+
+    CF = np.zeros((steps + 1, n_paths))
+    CF[steps, :] = payoff(S_paths[steps, :])
+
+    for t in range(steps - 1, -1, -1):
+        itm = payoff(S_paths[t, :]) > 0
+        X = S_paths[t, itm]
+        discounted_future = np.zeros(X.shape[0])
+        for i, path_idx in enumerate(np.where(itm)[0]):
+            future_ex_idx = np.where(CF[t + 1 :, path_idx] > 0)[0]
+            if len(future_ex_idx) > 0:
+                first_ex = future_ex_idx[0]
+                discounted_future[i] = CF[t + 1 + first_ex, path_idx] * discount ** (first_ex + 1)
+            else:
+                discounted_future[i] = 0
+        if len(X) > 0:
+            A = np.vstack([np.ones(X.shape[0]), X, X ** 2]).T
+            coeff, _, _, _ = np.linalg.lstsq(A, discounted_future, rcond=None)
+            continuation_value = coeff[0] + coeff[1] * X + coeff[2] * X ** 2
+            exercise_value = payoff(X)
+            exercise_idx = exercise_value > continuation_value
+            exercise_paths = np.where(itm)[0][exercise_idx]
+            CF[t, exercise_paths] = exercise_value[exercise_idx]
+            for ep in exercise_paths:
+                CF[t + 1 :, ep] = 0
+
+    prices = np.zeros(n_paths)
+    for path_idx in range(n_paths):
+        ex_times = np.where(CF[:, path_idx] > 0)[0]
+        if len(ex_times) > 0:
+            first_ex = ex_times[0]
+            prices[path_idx] = CF[first_ex, path_idx] * np.exp(-r * (first_ex * dt))
+        else:
+            prices[path_idx] = 0
+    return np.mean(prices)
+
+
+def timed(func, *args, **kwargs):
+    start = time.perf_counter()
+    value = func(*args, **kwargs)
+    runtime = time.perf_counter() - start
+    return value, runtime
+
+
+def main():
+    if st is None:
+        print("streamlit is required to run the dashboard")
+        return
+
+    st.title("Option Pricing Dashboard")
+
+    st.sidebar.header("Option Parameters")
+    S = st.sidebar.number_input("Spot Price", value=100.0)
+    K = st.sidebar.number_input("Strike Price", value=100.0)
+    T = st.sidebar.number_input("Time to Maturity (years)", value=1.0, step=0.1)
+    r = st.sidebar.number_input("Risk-free Rate", value=0.05)
+    sigma = st.sidebar.number_input("Volatility", value=0.2)
+    option_type = st.sidebar.selectbox("Option Type", ["call", "put"])
+    style = st.sidebar.selectbox("Style", ["European", "American"])
+
+    steps = st.sidebar.number_input("Steps (binomial/LSMC)", value=100, step=1)
+    n_paths = st.sidebar.number_input("Paths (MC/LSMC)", value=10000, step=1000)
+
+    if st.button("Calculate"):
+        results = []
+        prev = st.session_state.get("prev_results")
+
+        price, t_bs = timed(black_scholes_price, S, K, r, sigma, T, option_type)
+        results.append(("Black-Scholes", price, t_bs))
+
+        mc_price, t_mc = timed(european_monte_carlo, S, K, r, sigma, T, n_paths, option_type)
+        results.append(("Monte Carlo", mc_price, t_mc))
+
+        american = style == "American"
+        bin_price, t_bin = timed(binomial_option_price, S, K, r, sigma, T, int(steps), option_type, american)
+        results.append(("Binomial", bin_price, t_bin))
+
+        if style == "American" and option_type == "put":
+            fdm_price, t_fdm = timed(american_put_fdm_cn_psor, S, K, r, sigma, T, int(steps), int(steps))
+            results.append(("FDM CN-PSOR", fdm_price, t_fdm))
+            lsmc_price, t_lsmc = timed(american_lsmc_price, S, K, r, sigma, T, int(steps), int(n_paths), option_type)
+            results.append(("LSMC", lsmc_price, t_lsmc))
+
+        table = []
+        for name, val, runtime in results:
+            diff = None
+            if prev and name in prev:
+                diff = val - prev[name]
+            table.append({"Method": name, "Price": val, "Difference": diff, "Runtime (s)": runtime})
+
+        st.table(table)
+        st.session_state.prev_results = {name: val for name, val, _ in results}
+
+
+if __name__ == "__main__":
+    main()
