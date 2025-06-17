@@ -1,4 +1,4 @@
-![Dashboard screenshot](option_pricing.jpg)
+![Dashboard screenshot](Option_pricing.jpg)
 
 
 
