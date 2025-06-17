@@ -53,4 +53,10 @@ of simulation paths.
 
 ## Requirements
 
-See `requirements.txt` for the full list of Python dependencies.
+numpy
+pandas
+matplotlib
+scipy
+networkx
+plotly
+streamlit
