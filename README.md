@@ -1,3 +1,7 @@
+![Dashboard screenshot](option_pricing.jpg)
+
+
+
 # Option Pricing
 
 This repository contains educational code for pricing European and American options.
