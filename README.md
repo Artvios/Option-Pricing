@@ -53,10 +53,10 @@ of simulation paths.
 
 ## Requirements
 
--numpy
--pandas
--matplotlib
--scipy
--networkx
--plotly
--streamlit
+- numpy
+- pandas
+- matplotlib
+- scipy
+- networkx
+- plotly
+- streamlit
